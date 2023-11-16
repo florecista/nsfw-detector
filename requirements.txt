@@ -1,0 +1,5 @@
+tensorflow~=2.14.0
+tensorflow-hub
+pillow
+
+numpy~=1.26.1
