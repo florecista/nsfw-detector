@@ -1,12 +1,11 @@
 import sys
-import re
 from math import sqrt
 from pathlib import Path
 
 from PIL import Image
-from PySide6 import QtWidgets, QtGui
-from PySide6.QtWidgets import QApplication, QMainWindow, QTextEdit, QFileDialog, QMessageBox, QToolBar, QLabel, \
-    QDockWidget, QWidget, QFormLayout, QLineEdit, QPushButton, QCheckBox, QVBoxLayout, QScrollArea, QSizePolicy
+from PySide6 import QtWidgets
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QToolBar, QLabel, \
+    QDockWidget, QWidget, QFormLayout, QPushButton, QCheckBox, QScrollArea
 from PySide6.QtGui import QIcon, QAction, QPixmap, QImage
 from PySide6.QtCore import QSize, QDir
 from PySide6.QtCore import Qt
