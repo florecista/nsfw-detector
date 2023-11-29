@@ -1,11 +1,13 @@
 import sys
 import re
+from math import sqrt
 from pathlib import Path
 
+from PIL import Image
 from PySide6 import QtWidgets, QtGui
 from PySide6.QtWidgets import QApplication, QMainWindow, QTextEdit, QFileDialog, QMessageBox, QToolBar, QLabel, \
     QDockWidget, QWidget, QFormLayout, QLineEdit, QPushButton, QCheckBox, QVBoxLayout, QScrollArea, QSizePolicy
-from PySide6.QtGui import QIcon, QAction, QPixmap
+from PySide6.QtGui import QIcon, QAction, QPixmap, QImage
 from PySide6.QtCore import QSize, QDir
 from PySide6.QtCore import Qt
 
@@ -35,12 +37,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(scroll)
 
-        for i in range(10):
-            for j in range(10):
-                btn = QLabel('Test')
-                pixmap = QPixmap('hacker-icon.png')
-                btn.setPixmap(pixmap)
-                self.gridLayout.addWidget(btn, i, j)
+
 
         menu_bar = self.menuBar()
 
@@ -97,25 +94,25 @@ class MainWindow(QMainWindow):
         search_form.setLayout(layout)
 
 
-        self.checkbox1 = QCheckBox('Hentai', self)
-        self.checkbox1.setChecked(True)
-        layout.addRow(self.checkbox1)
+        self.checkboxHentai = QCheckBox('Hentai', self)
+        self.checkboxHentai.setChecked(True)
+        layout.addRow(self.checkboxHentai)
 
-        self.checkbox2 = QCheckBox('Sexy', self)
-        self.checkbox2.setChecked(True)
-        layout.addRow(self.checkbox2)
+        self.checkboxSexy = QCheckBox('Sexy', self)
+        self.checkboxSexy.setChecked(True)
+        layout.addRow(self.checkboxSexy)
 
-        self.checkbox3 = QCheckBox('Porn', self)
-        self.checkbox3.setChecked(True)
-        layout.addRow(self.checkbox3)
+        self.checkboxPorn = QCheckBox('Porn', self)
+        self.checkboxPorn.setChecked(True)
+        layout.addRow(self.checkboxPorn)
 
-        self.checkbox4 = QCheckBox('Drawings', self)
-        self.checkbox4.setChecked(True)
-        layout.addRow(self.checkbox4)
+        self.checkboxDrawings = QCheckBox('Drawings', self)
+        self.checkboxDrawings.setChecked(True)
+        layout.addRow(self.checkboxDrawings)
 
-        self.checkbox5 = QCheckBox('Neutral', self)
-        self.checkbox5.setChecked(True)
-        layout.addRow(self.checkbox5)
+        self.checkboxNeutral = QCheckBox('Neutral', self)
+        self.checkboxNeutral.setChecked(True)
+        layout.addRow(self.checkboxNeutral)
 
         btn_search = QPushButton('Go', clicked=self.search)
         layout.addRow(btn_search)
@@ -134,6 +131,15 @@ class MainWindow(QMainWindow):
         title = f"{filename if filename else 'Untitled'} - {self.title}"
         self.setWindowTitle(title)
 
+    def PIL_to_qimage(self, pil_img):
+        temp = pil_img.convert('RGBA')
+        return QImage(
+            temp.tobytes('raw', "RGBA"),
+            temp.size[0],
+            temp.size[1],
+            QImage.Format.Format_RGBA8888
+        )
+
     def open_folder(self):
 
         selected_directory = QFileDialog.getExistingDirectory()
@@ -142,9 +148,27 @@ class MainWindow(QMainWindow):
             self.path = Path(selected_directory)
             self.set_title(selected_directory)
 
-        for f in QDir(selected_directory).entryList(["*.jpg"], filters=QDir.Files):
-            print(f.title())
+        fileList = QDir(selected_directory).entryList(["*.jpg"], filters=QDir.Files)
+        fileCount = len(fileList)
+        squaredNumber = round(sqrt(fileCount))
+        if(squaredNumber < 8):
+            squaredNumber = 8
 
+        index = 0
+        for i in range(squaredNumber):
+            for j in range(squaredNumber):
+                if index < fileCount:
+                    size = (128, 128)
+                    image_original = Image.open('images/' + fileList[index])
+                    image_original.thumbnail(size, Image.Resampling.LANCZOS)
+                    pixmap = QPixmap.fromImage(self.PIL_to_qimage(image_original))
+                    btn = QLabel(fileList[index])
+                    btn.setFixedWidth(128)
+                    btn.setPixmap(pixmap)
+                    index = index + 1
+                else:
+                    btn = QLabel('')
+                self.gridLayout.addWidget(btn, i, j)
 
     def quit(self):
         if self.confirm_save():
