@@ -2,11 +2,11 @@ import sys
 import re
 from pathlib import Path
 
-from PySide6 import QtWidgets
+from PySide6 import QtWidgets, QtGui
 from PySide6.QtWidgets import QApplication, QMainWindow, QTextEdit, QFileDialog, QMessageBox, QToolBar, QLabel, \
     QDockWidget, QWidget, QFormLayout, QLineEdit, QPushButton, QCheckBox, QVBoxLayout, QScrollArea, QSizePolicy
 from PySide6.QtGui import QIcon, QAction, QPixmap
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, QDir
 from PySide6.QtCore import Qt
 
 
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         # status bar
         self.status_bar = self.statusBar()
 
-        # display the a message in 5 seconds
+        # display the message in 5 seconds
         self.status_bar.showMessage('Ready', 5000)
 
         # add a permanent widget to the status bar
@@ -135,10 +135,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
 
     def open_folder(self):
-        filename, _ = QFileDialog.getOpenFileName(self, filter=self.filters)
-        if filename:
-            self.path = Path(filename)
-            self.set_title(filename)
+
+        selected_directory = QFileDialog.getExistingDirectory()
+
+        if selected_directory:
+            self.path = Path(selected_directory)
+            self.set_title(selected_directory)
+
+        for f in QDir(selected_directory).entryList(["*.jpg"], filters=QDir.Files):
+            print(f.title())
+
 
     def quit(self):
         if self.confirm_save():
@@ -150,7 +156,7 @@ if __name__ == '__main__':
         # show the app icon on the taskbar
         import ctypes
 
-        myappid = 'yourcompany.yourproduct.subproduct.version'
+        myappid = 'matthewryan.analysistools.nsfwdetective.01'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     finally:
         app = QApplication(sys.argv)
