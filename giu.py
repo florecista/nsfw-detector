@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         porn = results['data']['porn']
         drawings = results['data']['drawings']
         neutral = results['data']['neutral']
+
         if neutral >= 25:
             results['data']['is_nsfw'] = False
         elif (sexy + porn + hentai) >= 70:
@@ -158,6 +159,28 @@ class MainWindow(QMainWindow):
             results['data']['is_nsfw'] = False
         else:
             results['data']['is_nsfw'] = False
+
+        return results
+
+    def show_image(self, results):
+        hentai = results['data']['hentai']
+        sexy = results['data']['sexy']
+        porn = results['data']['porn']
+        drawings = results['data']['drawings']
+        neutral = results['data']['neutral']
+
+        if neutral >= 25 and self.checkboxNeutral.isChecked():
+            return True
+        elif sexy >= 70 and self.checkboxSexy.isChecked():
+            return True
+        elif porn >= 70 and self.checkboxPorn.isChecked():
+            return True
+        elif hentai >= 70 and self.checkboxHentai.isChecked():
+            return True
+        elif drawings >= 40:
+            return True
+        else:
+            return False
 
     def open_folder(self):
 
@@ -188,9 +211,14 @@ class MainWindow(QMainWindow):
                     index = index + 1
 
                     self.check_image(path)
+                    if self.show_image(self.check_image(path)):
+                        self.gridLayout.addWidget(btn, i, j)
                 else:
                     btn = QLabel('')
-                self.gridLayout.addWidget(btn, i, j)
+                    self.gridLayout.addWidget(btn, i, j)
+
+
+
 
     def quit(self):
         if self.confirm_save():
