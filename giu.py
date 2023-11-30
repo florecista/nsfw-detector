@@ -1,3 +1,4 @@
+from nsfw_detector import predict
 import sys
 from math import sqrt
 from pathlib import Path
@@ -139,6 +140,25 @@ class MainWindow(QMainWindow):
             QImage.Format.Format_RGBA8888
         )
 
+    def check_image(self, image):
+        model = predict.load_model('nsfw_detector/nsfw_model.h5')
+
+        results = predict.classify(model, image)
+        # os.remove(image)
+        hentai = results['data']['hentai']
+        sexy = results['data']['sexy']
+        porn = results['data']['porn']
+        drawings = results['data']['drawings']
+        neutral = results['data']['neutral']
+        if neutral >= 25:
+            results['data']['is_nsfw'] = False
+        elif (sexy + porn + hentai) >= 70:
+            results['data']['is_nsfw'] = True
+        elif drawings >= 40:
+            results['data']['is_nsfw'] = False
+        else:
+            results['data']['is_nsfw'] = False
+
     def open_folder(self):
 
         selected_directory = QFileDialog.getExistingDirectory()
@@ -158,13 +178,16 @@ class MainWindow(QMainWindow):
             for j in range(squaredNumber):
                 if index < fileCount:
                     size = (128, 128)
-                    image_original = Image.open('images/' + fileList[index])
+                    path = 'images/' + fileList[index]
+                    image_original = Image.open(path)
                     image_original.thumbnail(size, Image.Resampling.LANCZOS)
                     pixmap = QPixmap.fromImage(self.PIL_to_qimage(image_original))
                     btn = QLabel(fileList[index])
                     btn.setFixedWidth(128)
                     btn.setPixmap(pixmap)
                     index = index + 1
+
+                    self.check_image(path)
                 else:
                     btn = QLabel('')
                 self.gridLayout.addWidget(btn, i, j)
