@@ -6,13 +6,16 @@ from pathlib import Path
 from PIL import Image
 from PySide6 import QtWidgets
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QToolBar, QLabel, \
-    QDockWidget, QWidget, QFormLayout, QPushButton, QCheckBox, QScrollArea
+    QDockWidget, QWidget, QFormLayout, QPushButton, QCheckBox, QScrollArea, QMessageBox
 from PySide6.QtGui import QIcon, QAction, QPixmap, QImage
 from PySide6.QtCore import QSize, QDir
 from PySide6.QtCore import Qt
 
 
 class MainWindow(QMainWindow):
+
+    selected_directory = ""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -89,9 +92,9 @@ class MainWindow(QMainWindow):
         self.dock = QDockWidget('Filter')
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock)
 
-        search_form = QWidget()
-        layout = QFormLayout(search_form)
-        search_form.setLayout(layout)
+        filter_form = QWidget()
+        layout = QFormLayout(filter_form)
+        filter_form.setLayout(layout)
 
 
         self.checkboxHentai = QCheckBox('Hentai', self)
@@ -114,18 +117,34 @@ class MainWindow(QMainWindow):
         self.checkboxNeutral.setChecked(True)
         layout.addRow(self.checkboxNeutral)
 
-        btn_search = QPushButton('Go', clicked=self.search)
-        layout.addRow(btn_search)
-        self.dock.setWidget(search_form)
+        btn_filter = QPushButton('Refresh', clicked=self.filter)
+        layout.addRow(btn_filter)
+        btn_clear = QPushButton('Clear', clicked=self.clear)
+        layout.addRow(btn_clear)
+        self.dock.setWidget(filter_form)
         self.show()
 
     def show_search_dock(self):
         self.dock.show()
 
-    def search(self):
-        term = self.search_term.text()
-        if not term:
-            return
+    def filter(self):
+        if self.selected_directory is None or self.selected_directory == "":
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Error")
+            dlg.setText("Image directory not selected. Please start with opening a directory.")
+            button = dlg.exec_()
+
+            if button == QMessageBox.Ok:
+                print("OK!")
+        else:
+            for i in reversed(range(self.gridLayout.count())):
+                self.gridLayout.itemAt(i).widget().setParent(None)
+
+            self.process_image_directory(self.selected_directory)
+
+    def clear(self):
+        for i in reversed(range(self.gridLayout.count())):
+                self.gridLayout.itemAt(i).widget().setParent(None)
 
     def set_title(self, filename=None):
         title = f"{filename if filename else 'Untitled'} - {self.title}"
@@ -182,13 +201,7 @@ class MainWindow(QMainWindow):
         else:
             return False
 
-    def open_folder(self):
-
-        selected_directory = QFileDialog.getExistingDirectory()
-
-        if selected_directory:
-            self.path = Path(selected_directory)
-            self.set_title(selected_directory)
+    def process_image_directory(self, selected_directory):
 
         fileList = QDir(selected_directory).entryList(["*.jpg"], filters=QDir.Files)
         fileCount = len(fileList)
@@ -218,7 +231,15 @@ class MainWindow(QMainWindow):
                     self.gridLayout.addWidget(btn, i, j)
 
 
+    def open_folder(self):
 
+        self.selected_directory = QFileDialog.getExistingDirectory()
+
+        if self.selected_directory:
+            self.path = Path(self.selected_directory)
+            self.set_title(self.selected_directory)
+
+        self.process_image_directory(self.selected_directory)
 
     def quit(self):
         if self.confirm_save():
