@@ -22,6 +22,10 @@ $ python main.py
 
 ```
 
+### Troubleshooting
+There can be issues with the model. When there is you can remove the existing one from the temp directory. On next start up a new model will be generated.
+You can find the existing model at - <user_home_dir>\AppData\Local\Temp\tfhub_modules
+
 # Credits
 
 Thanks to https://github.com/GantMan/nsfw_model/ for their model.
