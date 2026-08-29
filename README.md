@@ -18,9 +18,21 @@ $ pip install -U -r requirements.txt
 ## Run
 
 ```sh
-$ python main.py
+$ python gui.py
 
 ```
+
+## Scanning and filtering
+
+The desktop application scans `.jpg`, `.jpeg`, `.png`, and `.webp` images. Enable
+**Include subdirectories** before opening a directory when you want a recursive
+scan. Scans run in the background and can be cancelled from the progress dialog.
+
+Each image is classified once per scan. Changing the display filters uses the
+cached results and does not run the model again. **All NSFW** matches images whose
+combined `hentai + porn + sexy` score is at least 70 percent. Select a displayed
+image to see its full path and category confidence scores in the Scan details
+panel.
 
 ### Troubleshooting
 There can be issues with the model. When there is you can remove the existing one from the temp directory. On next start up a new model will be generated.

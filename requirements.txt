@@ -1,5 +1,6 @@
 tensorflow~=2.14.0
 tensorflow-hub
-pillow
+pillow~=10.1.0
 
 numpy~=1.26.1
+PySide6~=6.6.0

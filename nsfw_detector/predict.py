@@ -63,7 +63,8 @@ def load_model(model_path):
 
 def classify(model, input_paths, image_dim=IMAGE_DIM):
     """ Classify given a model, input paths (could be single string), and image dimensionality...."""
-    images, image_paths = load_images(input_paths, (image_dim, image_dim))
+    images, image_paths = load_images(
+        input_paths, (image_dim, image_dim), verbose=False)
     probs = classify_nd(model, images)
     return dict(zip(['data'], probs))
 
@@ -71,7 +72,7 @@ def classify(model, input_paths, image_dim=IMAGE_DIM):
 def classify_nd(model, nd_images):
     """ Classify given a model, image array (numpy)...."""
 
-    model_preds = model.predict(nd_images)
+    model_preds = model.predict(nd_images, verbose=0)
     # preds = np.argsort(model_preds, axis = 1).tolist()
 
     categories = ['drawings', 'hentai', 'neutral', 'porn', 'sexy']
