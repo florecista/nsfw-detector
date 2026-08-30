@@ -3,12 +3,16 @@ from collections import Counter
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QLabel,
@@ -25,46 +29,105 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nsfw_detector import predict
+from nsfw_detector.model_adapters import (
+    DEFAULT_MODEL_ID,
+    DEFAULT_NSFW_THRESHOLD,
+    available_model_types,
+    create_model_adapter,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
-MODEL_PATH = APP_DIR / "nsfw_detector" / "nsfw_model.h5"
 APP_ICON_PATH = APP_DIR / "hacker-icon.png"
+ORGANIZATION_NAME = "florecista"
+APPLICATION_NAME = "NSFW Detector"
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-NSFW_CATEGORIES = ("hentai", "porn", "sexy")
-NSFW_THRESHOLD = 70.0
-CATEGORY_THRESHOLDS = {
-    "drawings": 40.0,
-    "hentai": 70.0,
-    "neutral": 25.0,
-    "porn": 70.0,
-    "sexy": 70.0,
-}
-CATEGORY_LABELS = {
-    "drawings": "Drawings",
-    "hentai": "Hentai",
-    "neutral": "Neutral",
-    "porn": "Porn",
-    "sexy": "Sexy",
-}
 
 
-def evaluate_scores(raw_scores):
-    """Return normalized scores and the single NSFW decision used by the UI."""
-    scores = {
-        category: float(raw_scores.get(category, 0.0))
-        for category in CATEGORY_THRESHOLDS
-    }
-    nsfw_score = sum(scores[category] for category in NSFW_CATEGORIES)
-    scores["nsfw_score"] = nsfw_score
-    scores["is_nsfw"] = nsfw_score >= NSFW_THRESHOLD
-    return scores
+class ConfigurationDialog(QDialog):
+    def __init__(
+        self,
+        selected_model_id,
+        model_thresholds,
+        recursive_scan,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Configuration")
+        self.setMinimumWidth(520)
+        self.model_thresholds = dict(model_thresholds)
+        self.current_model_id = selected_model_id
 
+        layout = QFormLayout(self)
 
-def primary_category(scores):
-    return max(CATEGORY_THRESHOLDS, key=lambda category: scores[category])
+        self.model_combo = QComboBox(self)
+        for adapter_type in available_model_types():
+            self.model_combo.addItem(adapter_type.display_name, adapter_type.id)
+        selected_index = self.model_combo.findData(selected_model_id)
+        self.model_combo.setCurrentIndex(max(selected_index, 0))
+        layout.addRow("Default model:", self.model_combo)
+
+        self.model_description = QLabel(self)
+        self.model_description.setWordWrap(True)
+        self.model_description.setOpenExternalLinks(True)
+        layout.addRow("Model information:", self.model_description)
+
+        self.threshold_spin = QDoubleSpinBox(self)
+        self.threshold_spin.setRange(0.0, 100.0)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setSingleStep(1.0)
+        self.threshold_spin.setSuffix("%")
+        self.threshold_spin.setValue(
+            self.model_thresholds.get(selected_model_id, DEFAULT_NSFW_THRESHOLD)
+        )
+        layout.addRow("NSFW threshold:", self.threshold_spin)
+
+        self.recursive_checkbox = QCheckBox("Include subdirectories by default", self)
+        self.recursive_checkbox.setChecked(recursive_scan)
+        layout.addRow("Directory scans:", self.recursive_checkbox)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        self.model_combo.currentIndexChanged.connect(self._model_changed)
+        self._update_model_description()
+
+    def _model_changed(self):
+        self.model_thresholds[self.current_model_id] = self.threshold_spin.value()
+        self.current_model_id = self.model_combo.currentData()
+        self.threshold_spin.setValue(
+            self.model_thresholds.get(self.current_model_id, DEFAULT_NSFW_THRESHOLD)
+        )
+        self._update_model_description()
+
+    def _update_model_description(self):
+        adapter_type = next(
+            model_type
+            for model_type in available_model_types()
+            if model_type.id == self.model_combo.currentData()
+        )
+        self.model_description.setText(
+            f"{adapter_type.description}<br><br>"
+            f"Version: {adapter_type.version}<br>"
+            f'<a href="{adapter_type.source_url}">Model source</a>'
+        )
+
+    def configuration(self):
+        self.model_thresholds[self.model_combo.currentData()] = (
+            self.threshold_spin.value()
+        )
+        return {
+            "model_id": self.model_combo.currentData(),
+            "model_thresholds": self.model_thresholds,
+            "recursive_scan": self.recursive_checkbox.isChecked(),
+        }
 
 
 class ScanWorker(QObject):
@@ -73,9 +136,9 @@ class ScanWorker(QObject):
     progress = Signal(int, int, str)
     finished = Signal(bool)
 
-    def __init__(self, model, image_paths):
+    def __init__(self, model_adapter, image_paths):
         super().__init__()
-        self.model = model
+        self.model_adapter = model_adapter
         self.image_paths = image_paths
         self._cancel_requested = False
 
@@ -97,11 +160,8 @@ class ScanWorker(QObject):
                 with Image.open(image_path) as image:
                     image.load()
 
-                result = predict.classify(self.model, path_text)
-                raw_scores = result.get("data")
-                if not isinstance(raw_scores, dict):
-                    raise ValueError("The model did not return scores for this image.")
-                self.image_scanned.emit(path_text, evaluate_scores(raw_scores))
+                scores = self.model_adapter.classify(path_text)
+                self.image_scanned.emit(path_text, scores)
             except Exception as error:
                 self.image_skipped.emit(path_text, str(error))
 
@@ -111,9 +171,18 @@ class ScanWorker(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, settings=None, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.settings = settings or QSettings(ORGANIZATION_NAME, APPLICATION_NAME)
+        self.selected_model_id = self.settings.value(
+            "models/default", DEFAULT_MODEL_ID, type=str
+        )
+        self.model_adapter = create_model_adapter(
+            self.selected_model_id,
+            nsfw_threshold=self._model_threshold(self.selected_model_id),
+        )
+        self.selected_model_id = self.model_adapter.id
         self.title = "NSFW Detector"
         self.selected_directory = ""
         self.scan_results = {}
@@ -136,7 +205,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
 
         self.show()
-        self.model = self._load_model_once()
+        self._load_model_adapter(self.model_adapter)
 
     def _build_results_view(self):
         self.image_list = QListWidget(self)
@@ -154,6 +223,7 @@ class MainWindow(QMainWindow):
     def _build_actions(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
+        settings_menu = menu_bar.addMenu("&Settings")
         help_menu = menu_bar.addMenu("&Help")
 
         self.open_action = QAction("&Open directory...", self)
@@ -169,6 +239,14 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Alt+F4")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        self.configuration_action = QAction("&Configuration...", self)
+        self.configuration_action.setShortcut("Ctrl+,")
+        self.configuration_action.setStatusTip(
+            "Choose the default model and scan settings"
+        )
+        self.configuration_action.triggered.connect(self.open_configuration)
+        settings_menu.addAction(self.configuration_action)
 
         about_action = QAction("&About", self)
         about_action.setShortcut("F1")
@@ -190,40 +268,34 @@ class MainWindow(QMainWindow):
         filter_form = QWidget(self.filter_dock)
         layout = QFormLayout(filter_form)
 
-        layout.addRow(QLabel("Display results matching:", filter_form))
+        layout.addRow(QLabel("Common filters:", filter_form))
 
-        self.checkboxAllNsfw = QCheckBox(
-            f"All NSFW (combined score ≥ {NSFW_THRESHOLD:.0f}%)", self
-        )
-        self.checkboxAllNsfw.setChecked(False)
-        layout.addRow(self.checkboxAllNsfw)
+        self.checkboxAllResults = QCheckBox("All classified images", self)
+        layout.addRow(self.checkboxAllResults)
 
-        self.checkboxHentai = QCheckBox("Hentai", self)
-        self.checkboxHentai.setChecked(True)
-        layout.addRow(self.checkboxHentai)
+        self.checkboxNsfw = QCheckBox(self)
+        layout.addRow(self.checkboxNsfw)
 
-        self.checkboxSexy = QCheckBox("Sexy", self)
-        self.checkboxSexy.setChecked(True)
-        layout.addRow(self.checkboxSexy)
+        self.checkboxSfw = QCheckBox("SFW", self)
+        layout.addRow(self.checkboxSfw)
 
-        self.checkboxPorn = QCheckBox("Porn", self)
-        self.checkboxPorn.setChecked(True)
-        layout.addRow(self.checkboxPorn)
+        self.model_categories_heading = QLabel(filter_form)
+        self.model_categories_heading.setWordWrap(True)
+        layout.addRow(self.model_categories_heading)
 
-        self.checkboxDrawings = QCheckBox("Drawings", self)
-        self.checkboxDrawings.setChecked(True)
-        layout.addRow(self.checkboxDrawings)
-
-        self.checkboxNeutral = QCheckBox("Neutral", self)
-        self.checkboxNeutral.setChecked(True)
-        layout.addRow(self.checkboxNeutral)
+        self.category_filter_widget = QWidget(filter_form)
+        self.category_filter_layout = QVBoxLayout(self.category_filter_widget)
+        self.category_filter_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addRow(self.category_filter_widget)
 
         layout.addRow(QPushButton("Apply filters", clicked=self.filter))
         layout.addRow(QPushButton("Clear results", clicked=self.clear_results))
 
         layout.addRow(QLabel("Scan options:", filter_form))
         self.checkboxRecursive = QCheckBox("Include subdirectories", self)
-        self.checkboxRecursive.setChecked(False)
+        self.checkboxRecursive.setChecked(
+            self.settings.value("scan/recursive", False, type=bool)
+        )
         self.checkboxRecursive.setToolTip("Applies the next time a directory is opened")
         layout.addRow(self.checkboxRecursive)
 
@@ -233,13 +305,9 @@ class MainWindow(QMainWindow):
         layout.addRow(format_label)
 
         self.filter_dock.setWidget(filter_form)
-        self.filter_checkboxes = {
-            "hentai": self.checkboxHentai,
-            "sexy": self.checkboxSexy,
-            "porn": self.checkboxPorn,
-            "drawings": self.checkboxDrawings,
-            "neutral": self.checkboxNeutral,
-        }
+        self.filter_checkboxes = {}
+        self._rebuild_model_category_filters()
+        self._restore_filter_settings()
 
     def _build_details_panel(self):
         self.details_dock = QDockWidget("Scan details", self)
@@ -285,26 +353,178 @@ class MainWindow(QMainWindow):
         self.display_count_label = QLabel("Displayed: 0", self)
         self.status_bar.addPermanentWidget(self.display_count_label)
 
-    def _load_model_once(self):
+    def _model_threshold(self, model_id):
+        value = self.settings.value(
+            f"models/{model_id}/nsfw_threshold", DEFAULT_NSFW_THRESHOLD
+        )
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NSFW_THRESHOLD
+
+    def _all_model_thresholds(self):
+        return {
+            adapter_type.id: self._model_threshold(adapter_type.id)
+            for adapter_type in available_model_types()
+        }
+
+    def _rebuild_model_category_filters(self):
+        while self.category_filter_layout.count():
+            item = self.category_filter_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+
+        self.filter_checkboxes = {}
+        self.model_categories_heading.setText(
+            f"{self.model_adapter.display_name} categories:"
+        )
+        for category in self.model_adapter.categories:
+            checkbox = QCheckBox(category.label, self.category_filter_widget)
+            self.category_filter_layout.addWidget(checkbox)
+            self.filter_checkboxes[category.id] = checkbox
+
+        if not self.model_adapter.categories:
+            no_categories = QLabel(
+                "This model does not provide category-specific scores.",
+                self.category_filter_widget,
+            )
+            no_categories.setWordWrap(True)
+            self.category_filter_layout.addWidget(no_categories)
+
+        self._update_nsfw_filter_label()
+
+    def _update_nsfw_filter_label(self):
+        self.checkboxNsfw.setText(
+            f"NSFW (score ≥ {self.model_adapter.nsfw_threshold:.1f}%)"
+        )
+
+    def _filter_settings_prefix(self, model_id=None):
+        return f"filters/{model_id or self.model_adapter.id}"
+
+    def _restore_filter_settings(self):
+        prefix = self._filter_settings_prefix()
+        default_all_results = not bool(self.model_adapter.categories)
+        self.checkboxAllResults.setChecked(
+            self.settings.value(
+                f"{prefix}/all_results", default_all_results, type=bool
+            )
+        )
+        self.checkboxNsfw.setChecked(
+            self.settings.value(f"{prefix}/nsfw", False, type=bool)
+        )
+        self.checkboxSfw.setChecked(
+            self.settings.value(f"{prefix}/sfw", False, type=bool)
+        )
+
+        saved_categories = self.settings.value(f"{prefix}/categories")
+        if saved_categories is None:
+            selected_categories = set(self.filter_checkboxes)
+        elif isinstance(saved_categories, str):
+            selected_categories = {saved_categories}
+        else:
+            selected_categories = set(saved_categories)
+        selected_categories.discard("__none__")
+
+        for category_id, checkbox in self.filter_checkboxes.items():
+            checkbox.setChecked(category_id in selected_categories)
+
+    def _save_filter_settings(self):
+        prefix = self._filter_settings_prefix()
+        self.settings.setValue(
+            f"{prefix}/all_results", self.checkboxAllResults.isChecked()
+        )
+        self.settings.setValue(f"{prefix}/nsfw", self.checkboxNsfw.isChecked())
+        self.settings.setValue(f"{prefix}/sfw", self.checkboxSfw.isChecked())
+        selected_categories = [
+            category_id
+            for category_id, checkbox in self.filter_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+        self.settings.setValue(
+            f"{prefix}/categories", selected_categories or ["__none__"]
+        )
+
+    def open_configuration(self):
+        if self._scan_is_running():
+            QMessageBox.information(
+                self,
+                "Scan in progress",
+                "Cancel or wait for the current scan before changing models.",
+            )
+            return
+
+        dialog = ConfigurationDialog(
+            selected_model_id=self.model_adapter.id,
+            model_thresholds=self._all_model_thresholds(),
+            recursive_scan=self.checkboxRecursive.isChecked(),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        configuration = dialog.configuration()
+        selected_model_id = configuration["model_id"]
+        selected_threshold = configuration["model_thresholds"][selected_model_id]
+
+        self._save_filter_settings()
+        self.settings.setValue("scan/recursive", configuration["recursive_scan"])
+        self.checkboxRecursive.setChecked(configuration["recursive_scan"])
+        for model_id, threshold in configuration["model_thresholds"].items():
+            self.settings.setValue(f"models/{model_id}/nsfw_threshold", threshold)
+
+        if selected_model_id != self.model_adapter.id:
+            candidate = create_model_adapter(
+                selected_model_id, nsfw_threshold=selected_threshold
+            )
+            if not self._load_model_adapter(candidate):
+                return
+            self.model_adapter = candidate
+            self.selected_model_id = candidate.id
+            self.settings.setValue("models/default", candidate.id)
+            self.scan_results.clear()
+            self.skipped_files.clear()
+            self.total_discovered = 0
+            self.image_list.clear()
+            self.skipped_text.clear()
+            self.selected_path_label.setText("None")
+            self.selected_scores_label.clear()
+            self._rebuild_model_category_filters()
+            self._restore_filter_settings()
+        else:
+            self.model_adapter.nsfw_threshold = selected_threshold
+            self.scan_results = {
+                path: self.model_adapter.apply_threshold(scores)
+                for path, scores in self.scan_results.items()
+            }
+            self._update_nsfw_filter_label()
+
+        self.settings.setValue("models/default", self.model_adapter.id)
+        self.settings.sync()
+        self.render_cached_results()
+        self.status_bar.showMessage("Configuration saved", 5000)
+
+    def _load_model_adapter(self, model_adapter):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        self.status_bar.showMessage("Loading model...")
+        self.status_bar.showMessage(f"Loading {model_adapter.display_name}...")
         QApplication.processEvents()
         try:
-            model = predict.load_model(str(MODEL_PATH))
+            model_adapter.load()
         except Exception as error:
-            self.open_action.setEnabled(False)
+            if not self.model_adapter.loaded:
+                self.open_action.setEnabled(False)
             QMessageBox.critical(
                 self,
                 "Model load failed",
-                f"The NSFW model could not be loaded:\n\n{error}",
+                f"{model_adapter.display_name} could not be loaded:\n\n{error}",
             )
             self.status_bar.showMessage("Model load failed")
-            return None
+            return False
         finally:
             QApplication.restoreOverrideCursor()
 
-        self.status_bar.showMessage("Model ready", 5000)
-        return model
+        self.open_action.setEnabled(True)
+        self.status_bar.showMessage(f"{model_adapter.display_name} ready", 5000)
+        return True
 
     def set_title(self, filename=None):
         name = filename if filename else "No directory"
@@ -345,7 +565,7 @@ class MainWindow(QMainWindow):
         self.start_scan()
 
     def start_scan(self):
-        if self.model is None:
+        if not self.model_adapter.loaded:
             QMessageBox.critical(self, "Model unavailable", "The model is not loaded.")
             return
         if not self.selected_directory:
@@ -382,6 +602,7 @@ class MainWindow(QMainWindow):
             return
 
         self.open_action.setEnabled(False)
+        self.configuration_action.setEnabled(False)
         self.progress_dialog = QProgressDialog(
             "Preparing scan...", "Cancel", 0, len(image_paths), self
         )
@@ -392,7 +613,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog.setAutoReset(False)
 
         self.scan_thread = QThread(self)
-        self.scan_worker = ScanWorker(self.model, image_paths)
+        self.scan_worker = ScanWorker(self.model_adapter, image_paths)
         self.scan_worker.moveToThread(self.scan_thread)
 
         self.scan_thread.started.connect(self.scan_worker.run)
@@ -428,12 +649,13 @@ class MainWindow(QMainWindow):
     @Slot(int, int, str)
     def _update_scan_progress(self, current, total, image_path):
         progress_dialog = self.progress_dialog
-        if progress_dialog is not None:
-            progress_dialog.setLabelText(
-                f"Scanning {current} of {total}:\n{Path(image_path).name}"
-            )
-            progress_dialog.setMaximum(total)
-            progress_dialog.setValue(current)
+        if progress_dialog is None:
+            return
+        progress_dialog.setLabelText(
+            f"Scanning {current} of {total}:\n{Path(image_path).name}"
+        )
+        progress_dialog.setMaximum(total)
+        progress_dialog.setValue(current)
         self.status_bar.showMessage(
             f"Scanning {current}/{total}: {Path(image_path).name}"
         )
@@ -446,6 +668,7 @@ class MainWindow(QMainWindow):
             self.progress_dialog = None
 
         self.open_action.setEnabled(True)
+        self.configuration_action.setEnabled(True)
         self._update_skipped_text()
         self.render_cached_results()
 
@@ -475,16 +698,22 @@ class MainWindow(QMainWindow):
                 "Choose a directory before applying filters.",
             )
             return
+        self._save_filter_settings()
+        self.settings.sync()
         self.render_cached_results()
 
     def _matches_selected_filters(self, scores):
-        if self.checkboxAllNsfw.isChecked() and scores["is_nsfw"]:
+        if self.checkboxAllResults.isChecked():
+            return True
+        if self.checkboxNsfw.isChecked() and scores["is_nsfw"]:
+            return True
+        if self.checkboxSfw.isChecked() and not scores["is_nsfw"]:
             return True
 
         return any(
             checkbox.isChecked()
-            and scores[category] >= CATEGORY_THRESHOLDS[category]
-            for category, checkbox in self.filter_checkboxes.items()
+            and self.model_adapter.category_matches(scores, category_id)
+            for category_id, checkbox in self.filter_checkboxes.items()
         )
 
     def render_cached_results(self):
@@ -505,9 +734,11 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
 
-            category = primary_category(scores)
-            confidence = scores[category]
-            label = f"{Path(image_path).name}\n{CATEGORY_LABELS[category]} {confidence:.1f}%"
+            category = self.model_adapter.primary_category(scores)
+            label = Path(image_path).name
+            if category is not None:
+                confidence = scores[category.id]
+                label += f"\n{category.label} {confidence:.1f}%"
             if scores["is_nsfw"]:
                 label += f"\nNSFW {scores['nsfw_score']:.1f}%"
 
@@ -521,20 +752,25 @@ class MainWindow(QMainWindow):
         self._update_summary()
 
     def _format_item_details(self, image_path, scores):
-        category = primary_category(scores)
+        category = self.model_adapter.primary_category(scores)
         lines = []
         if image_path:
             lines.append(image_path)
-        lines.extend(
-            [
-                f"Primary category: {CATEGORY_LABELS[category]} ({scores[category]:.2f}%)",
-                f"NSFW: {'Yes' if scores['is_nsfw'] else 'No'} "
-                f"({scores['nsfw_score']:.2f}%)",
-            ]
+        lines.append(
+            f"Model: {self.model_adapter.display_name} ({self.model_adapter.version})"
+        )
+        if category is not None:
+            lines.append(
+                f"Primary category: {category.label} ({scores[category.id]:.2f}%)"
+            )
+        lines.append(
+            f"NSFW: {'Yes' if scores['is_nsfw'] else 'No'} "
+            f"({scores['nsfw_score']:.2f}%, threshold "
+            f"{self.model_adapter.nsfw_threshold:.1f}%)"
         )
         lines.extend(
-            f"{CATEGORY_LABELS[name]}: {scores[name]:.2f}%"
-            for name in CATEGORY_THRESHOLDS
+            f"{category.label}: {scores[category.id]:.2f}%"
+            for category in self.model_adapter.categories
         )
         return "\n".join(lines)
 
@@ -551,9 +787,11 @@ class MainWindow(QMainWindow):
         self.selected_scores_label.setText(self._format_item_details("", scores))
 
     def _update_summary(self):
-        counts = Counter(
-            primary_category(scores) for scores in self.scan_results.values()
-        )
+        counts = Counter()
+        for scores in self.scan_results.values():
+            category = self.model_adapter.primary_category(scores)
+            if category is not None:
+                counts[category.id] += 1
         nsfw_count = sum(
             1 for scores in self.scan_results.values() if scores["is_nsfw"]
         )
@@ -563,6 +801,8 @@ class MainWindow(QMainWindow):
             else "Selected directory only"
         )
         lines = [
+            f"Model: {self.model_adapter.display_name}",
+            f"NSFW threshold: {self.model_adapter.nsfw_threshold:.1f}%",
             f"Directory: {self.selected_directory or 'None'}",
             f"Scope: {scope}",
             f"Found: {self.total_discovered}",
@@ -573,10 +813,13 @@ class MainWindow(QMainWindow):
             "",
             "Primary categories:",
         ]
-        lines.extend(
-            f"{CATEGORY_LABELS[category]}: {counts[category]}"
-            for category in CATEGORY_THRESHOLDS
-        )
+        if self.model_adapter.categories:
+            lines.extend(
+                f"{category.label}: {counts[category.id]}"
+                for category in self.model_adapter.categories
+            )
+        else:
+            lines.append("Not supplied by this model")
         self.summary_label.setText("\n".join(lines))
 
     def _update_skipped_text(self):
@@ -611,9 +854,11 @@ class MainWindow(QMainWindow):
             self,
             "About NSFW Detector",
             "NSFW Detector scans supported images locally and displays results "
-            "using configurable category filters.\n\n"
-            f"All NSFW means {', '.join(NSFW_CATEGORIES)} combined ≥ "
-            f"{NSFW_THRESHOLD:.0f}%.",
+            "using model-aware filters.\n\n"
+            f"Active model: {self.model_adapter.display_name}\n"
+            f"NSFW threshold: {self.model_adapter.nsfw_threshold:.1f}%\n\n"
+            "Open Settings > Configuration to choose the default model and "
+            "scan options.",
         )
 
     def closeEvent(self, event):
@@ -623,6 +868,14 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Cancelling scan before closing...")
             event.ignore()
             return
+        self._save_filter_settings()
+        self.settings.setValue("models/default", self.model_adapter.id)
+        self.settings.setValue(
+            f"models/{self.model_adapter.id}/nsfw_threshold",
+            self.model_adapter.nsfw_threshold,
+        )
+        self.settings.setValue("scan/recursive", self.checkboxRecursive.isChecked())
+        self.settings.sync()
         event.accept()
 
 
