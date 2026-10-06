@@ -1,6 +1,6 @@
 import argparse
 import json
-from os import listdir
+from os import PathLike, listdir
 from os.path import isfile, join, exists, isdir, abspath
 
 import numpy as np
@@ -28,12 +28,14 @@ def load_images(image_paths, image_size, verbose=True):
     loaded_images = []
     loaded_image_paths = []
 
-    if isdir(image_paths):
+    if isinstance(image_paths, (str, bytes, PathLike)) and isdir(image_paths):
         parent = abspath(image_paths)
         image_paths = [join(parent, f) for f in listdir(
             image_paths) if isfile(join(parent, f))]
-    elif isfile(image_paths):
+    elif isinstance(image_paths, (str, bytes, PathLike)) and isfile(image_paths):
         image_paths = [image_paths]
+    else:
+        image_paths = list(image_paths)
 
     for img_path in image_paths:
         try:
@@ -66,7 +68,9 @@ def classify(model, input_paths, image_dim=IMAGE_DIM):
     images, image_paths = load_images(
         input_paths, (image_dim, image_dim), verbose=False)
     probs = classify_nd(model, images)
-    return dict(zip(['data'], probs))
+    if len(probs) == 1:
+        return {"data": probs[0]}
+    return dict(zip(image_paths, probs))
 
 
 def classify_nd(model, nd_images):
